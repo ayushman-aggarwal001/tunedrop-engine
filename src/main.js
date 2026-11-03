@@ -1,148 +1,396 @@
-/**
- * sdemux v2 — server-side stem separation via Demucs API
- * Boombox UI with cassette deck (input) and speaker (output)
- */
 
 import JSZip from 'jszip';
+import './style.css';
 
-const API_BASE = 'https://sdemux.joverval.cl/api';
+import {
+  loadDemucsModel,
+  separateStems,
+  extractStems
+} from './demucs-loader.js';
 
-// ── DOM refs ──
-const dropZone = document.getElementById('drop-zone');
-const fileInput = document.getElementById('file-input');
-const sourcePlayer = document.getElementById('source-player');
-const sourceAudio = document.getElementById('source-audio');
-const sourceInfo = document.getElementById('source-info');
-const statusEl = document.getElementById('status');
-const separateBtn = document.getElementById('separate-btn');
-const stemGrid = document.getElementById('stem-cards');
-const downloadAll = document.getElementById('download-all');
-const playAllBtn = document.getElementById('play-all');
-const spoolLeft = document.getElementById('spool-left');
-const spoolRight = document.getElementById('spool-right');
+const TARGET_SAMPLE_RATE = 44100;
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
-// ── State ──
+const $ = (id) => document.getElementById(id);
+
+const dropZone = $('drop-zone');
+const fileInput = $('file-input');
+const sourcePlayer = $('source-player');
+const sourceAudio = $('source-audio');
+const sourceInfo = $('source-info');
+const statusEl = $('status');
+const separateBtn = $('separate-btn');
+const stemGrid = $('stem-cards');
+const downloadAll = $('download-all');
+const playAllBtn = $('play-all');
+const spoolLeft = $('spool-left');
+const spoolRight = $('spool-right');
+
 let currentFile = null;
+let modelSession = null;
+let modelPromise = null;
 
-// Web Audio playback
-let audioCtx = null;
+let audioContext = null;
 let activeSources = [];
-let stemGains = {};
 let stemBuffers = {};
 let stemBlobs = {};
+let stemUrls = {};
 let isPlaying = false;
 
-// ── Stem display config ──
-const STEM_CONFIG = {
-  vocals: { label: 'Vocals', emoji: '', color: '#c0392b' },
-  drums:  { label: 'Drums',  emoji: '', color: '#c0392b' },
-  bass:   { label: 'Bass',   emoji: '', color: '#c0392b' },
-  other:  { label: 'Other',  emoji: '', color: '#c0392b' },
+const STEMS = ['vocals', 'drums', 'bass', 'other'];
+
+const LABELS = {
+  vocals: 'Vocals',
+  drums: 'Drums',
+  bass: 'Bass',
+  other: 'Other Instruments'
 };
 
-// ── Upload ──
-dropZone.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', (e) => {
-  const file = e.target.files[0];
-  if (file) handleFile(file);
-});
+function setStatus(message, error = false) {
+  statusEl.textContent = message;
+  statusEl.style.color = error ? 'var(--accent)' : '';
+}
 
-dropZone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  dropZone.classList.add('drag-over');
-});
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-dropZone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  dropZone.classList.remove('drag-over');
-  const file = e.dataTransfer.files[0];
-  if (file) handleFile(file);
-});
+function startSpools() {
+  spoolLeft?.classList.add('spinning');
+  spoolRight?.classList.add('spinning');
+}
+
+function stopSpools() {
+  spoolLeft?.classList.remove('spinning');
+  spoolRight?.classList.remove('spinning');
+}
+
+function resetResults() {
+  stopAll();
+
+  for (const url of Object.values(stemUrls)) {
+    URL.revokeObjectURL(url);
+  }
+
+  stemBuffers = {};
+  stemBlobs = {};
+  stemUrls = {};
+
+  stemGrid.innerHTML = '';
+  downloadAll.style.display = 'none';
+  playAllBtn.style.display = 'none';
+}
 
 function handleFile(file) {
-  const MAX_SIZE = 10 * 1024 * 1024;  // 10 MB
-  if (file.size > MAX_SIZE) {
-    statusEl.textContent = 'File too large. Maximum is 10 MB.';
+  if (!file) return;
+
+  if (file.size > MAX_FILE_SIZE) {
+    setStatus('File too large. Maximum size is 10 MB.', true);
     return;
   }
 
-  if (!file.type.startsWith('audio/') && !file.name.match(/\.(wav|mp3|m4a|ogg|flac)$/i)) {
-    statusEl.textContent = 'Unsupported file type. Use MP3 or WAV.';
+  if (
+    !file.type.startsWith('audio/') &&
+    !/\.(wav|mp3|m4a|ogg|flac)$/i.test(file.name)
+  ) {
+    setStatus('Unsupported file. Please choose an audio file.', true);
     return;
+  }
+
+  resetResults();
+
+  currentFile = file;
+
+  if (sourceAudio.src.startsWith('blob:')) {
+    URL.revokeObjectURL(sourceAudio.src);
   }
 
   sourceAudio.src = URL.createObjectURL(file);
   sourcePlayer.style.display = 'block';
-  sourceInfo.textContent = `${file.name}  \u2014  ${(file.size / 1024 / 1024).toFixed(1)} MB`;
+  sourceInfo.textContent =
+    `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB`;
+
   separateBtn.style.display = 'block';
-  statusEl.textContent = 'Ready. Press Separate to send to server.';
-  stemGrid.innerHTML = '';
-  downloadAll.style.display = 'none';
-  playAllBtn.style.display = 'none';
-
-  // Reset playback
-  stopAll();
-  stemBuffers = {};
-  stemBlobs = {};
-
-  currentFile = file;
-}
-
-// ── Separate button ──
-separateBtn.addEventListener('click', async () => {
-  if (!currentFile) return;
-  separateBtn.disabled = true;
-  separateBtn.textContent = '▶ Uploading...';
-  await processFile(currentFile);
   separateBtn.disabled = false;
   separateBtn.textContent = '▶ Separate';
+
+  setStatus('Your track is ready. Press Separate to begin.');
+}
+
+dropZone.addEventListener('click', () => fileInput.click());
+
+fileInput.addEventListener('change', (event) => {
+  handleFile(event.target.files[0]);
+  fileInput.value = '';
 });
 
-// ── Play All button ──
-playAllBtn.addEventListener('click', () => playAll());
+dropZone.addEventListener('dragover', (event) => {
+  event.preventDefault();
+  dropZone.classList.add('drag-over');
+});
 
-// ── Spool animation ──
-function startSpools() {
-  spoolLeft.classList.add('spinning');
-  spoolRight.classList.add('spinning');
-}
-function stopSpools() {
-  spoolLeft.classList.remove('spinning');
-  spoolRight.classList.remove('spinning');
+dropZone.addEventListener('dragleave', () => {
+  dropZone.classList.remove('drag-over');
+});
+
+dropZone.addEventListener('drop', (event) => {
+  event.preventDefault();
+  dropZone.classList.remove('drag-over');
+  handleFile(event.dataTransfer.files[0]);
+});
+
+// Load the model once and reuse it for future songs.
+async function getModel() {
+  if (modelSession) return modelSession;
+
+  if (!modelPromise) {
+    modelPromise = loadDemucsModel((progress) => {
+      if (progress.stage === 'checking') {
+        setStatus('Checking for a saved AI model...');
+      } else if (progress.stage === 'downloading') {
+        const pct = progress.percent ?? 0;
+        const received = progress.received
+          ? ` · ${(progress.received / 1048576).toFixed(1)} MB downloaded`
+          : '';
+
+        setStatus(`Downloading AI model: ${pct}%${received}`);
+      } else if (progress.stage === 'loading') {
+        setStatus('Loading AI model into your browser...');
+      } else if (progress.stage === 'ready') {
+        setStatus('AI model ready!');
+      }
+    });
+  }
+
+  try {
+    modelSession = await modelPromise;
+    return modelSession;
+  } catch (error) {
+    modelPromise = null;
+    throw error;
+  }
 }
 
-// ── Speaker grille peel animation ──
-let _peelStarted = false;
-function updatePeel(progress) {
-  if (!_peelStarted) {
-    _peelStarted = true;
-    document.querySelector('.speaker-grille').classList.add('peeling');
+// Convert uploaded audio to stereo 44.1 kHz.
+async function decodeAndResample(file) {
+  if (!audioContext || audioContext.state === 'closed') {
+    audioContext = new AudioContext();
   }
-  document.querySelector('.speaker-grille').style.setProperty('--peel-progress', progress);
-}
-function resetPeel() {
-  _peelStarted = false;
-  const grille = document.querySelector('.speaker-grille');
-  if (grille) {
-    grille.classList.remove('peeling');
-    grille.style.removeProperty('--peel-progress');
-  }
+
+  const fileData = await file.arrayBuffer();
+  const decoded = await audioContext.decodeAudioData(fileData);
+
+  const outputLength = Math.ceil(
+    decoded.duration * TARGET_SAMPLE_RATE
+  );
+
+  const offline = new OfflineAudioContext(
+    2,
+    outputLength,
+    TARGET_SAMPLE_RATE
+  );
+
+  const source = offline.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offline.destination);
+  source.start(0);
+
+  return await offline.startRendering();
 }
 
-// ── Web Audio multi‑stem playback ──
-async function setupStemBuffers() {
-  if (!stemBlobs || Object.keys(stemBlobs).length === 0) return;
-  if (!audioCtx) audioCtx = new AudioContext();
-  const names = ['vocals', 'drums', 'bass', 'other'];
-  for (const name of names) {
-    const blob = stemBlobs[name];
-    if (!blob) continue;
-    const buf = await blob.arrayBuffer();
-    stemBuffers[name] = await audioCtx.decodeAudioData(buf);
+// Convert an AudioBuffer into a downloadable WAV file.
+function audioBufferToWav(buffer) {
+  const channels = buffer.numberOfChannels;
+  const samples = buffer.length;
+  const bytesPerSample = 2;
+
+  const dataSize = samples * channels * bytesPerSample;
+  const arrayBuffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(arrayBuffer);
+
+  function writeString(offset, value) {
+    for (let i = 0; i < value.length; i++) {
+      view.setUint8(offset + i, value.charCodeAt(i));
+    }
   }
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, buffer.sampleRate, true);
+  view.setUint32(
+    28,
+    buffer.sampleRate * channels * bytesPerSample,
+    true
+  );
+  view.setUint16(32, channels * bytesPerSample, true);
+  view.setUint16(34, 16, true);
+  writeString(36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  const channelData = [];
+
+  for (let c = 0; c < channels; c++) {
+    channelData.push(buffer.getChannelData(c));
+  }
+
+  let offset = 44;
+
+  for (let i = 0; i < samples; i++) {
+    for (let c = 0; c < channels; c++) {
+      const sample = Math.max(-1, Math.min(1, channelData[c][i]));
+      const value = sample < 0
+        ? sample * 32768
+        : sample * 32767;
+
+      view.setInt16(offset, value, true);
+      offset += 2;
+    }
+  }
+
+  return new Blob([arrayBuffer], { type: 'audio/wav' });
+}
+
+function displayStems(buffers) {
+  stemGrid.innerHTML = '';
+
+  for (const name of STEMS) {
+    const buffer = buffers[name];
+    if (!buffer) continue;
+
+    const blob = audioBufferToWav(buffer);
+    const url = URL.createObjectURL(blob);
+
+    stemBuffers[name] = buffer;
+    stemBlobs[name] = blob;
+    stemUrls[name] = url;
+
+    const card = document.createElement('div');
+    card.className = 'stem-card';
+
+    const heading = document.createElement('h3');
+    heading.textContent = LABELS[name];
+
+    const player = document.createElement('audio');
+    player.controls = true;
+    player.src = url;
+    player.preload = 'none';
+
+    const download = document.createElement('button');
+    download.className = 'btn-stem-dl';
+    download.textContent = 'Download WAV';
+
+    download.addEventListener('click', () => {
+      downloadBlob(blob, `${name}.wav`);
+    });
+
+    const mute = document.createElement('button');
+    mute.className = 'btn-mute';
+    mute.textContent = '🔊';
+    mute.dataset.stem = name;
+    mute.style.display = 'none';
+
+    mute.addEventListener('click', () => toggleStemMute(name, mute));
+
+    card.append(heading, player, download, mute);
+    stemGrid.appendChild(card);
+  }
+
+  downloadAll.style.display = 'block';
   playAllBtn.style.display = 'block';
-  // Reveal mute buttons
-  document.querySelectorAll('.btn-mute').forEach(b => b.style.display = '');
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+
+  link.href = url;
+  link.download = filename;
+  link.click();
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function processFile(file) {
+  startSpools();
+  resetResults();
+
+  separateBtn.disabled = true;
+
+  try {
+    setStatus('Preparing your audio...');
+
+    const audioData = await decodeAndResample(file);
+
+    setStatus('Loading the Demucs AI model...');
+
+    const session = await getModel();
+
+    setStatus('Separating vocals and instruments...');
+
+    const result = await separateStems(
+      session,
+      audioData,
+      TARGET_SAMPLE_RATE,
+      (progress) => {
+        setStatus(
+          `AI separation: ${progress.percent}% ` +
+          `(chunk ${progress.chunk}/${progress.total})`
+        );
+      }
+    );
+
+    setStatus('Preparing your four audio tracks...');
+
+    const buffers = extractStems(
+      result,
+      TARGET_SAMPLE_RATE,
+      audioContext
+    );
+
+    displayStems(buffers);
+
+    setStatus('Complete! Your four stems are ready to play and download.');
+    separateBtn.style.display = 'none';
+
+  } catch (error) {
+    console.error(error);
+
+    setStatus(
+      `Separation failed: ${error.message || 'Unknown error'}`,
+      true
+    );
+
+    separateBtn.disabled = false;
+    separateBtn.textContent = '▶ Try Again';
+
+  } finally {
+    stopSpools();
+  }
+}
+
+separateBtn.addEventListener('click', async () => {
+  if (!currentFile) return;
+  await processFile(currentFile);
+});
+
+function stopAll() {
+  for (const source of activeSources) {
+    try {
+      source.stop();
+    } catch {
+      // Source may already have stopped.
+    }
+  }
+
+  activeSources = [];
+  isPlaying = false;
+  playAllBtn.textContent = '▶ Play All';
+
+  document.querySelectorAll('.btn-mute').forEach((button) => {
+    button.textContent = '🔊';
+    button.classList.remove('muted');
+  });
 }
 
 async function playAll() {
@@ -151,252 +399,84 @@ async function playAll() {
     return;
   }
 
-  if (!audioCtx || audioCtx.state === 'closed') audioCtx = new AudioContext();
-  if (audioCtx.state === 'suspended') await audioCtx.resume();
-
-  // Build source + gain for each loaded stem
-  const names = ['vocals', 'drums', 'bass', 'other'];
-  activeSources = [];
-  stemGains = {};
-
-  for (const name of names) {
-    const buf = stemBuffers[name];
-    if (!buf) continue;
-    const src = audioCtx.createBufferSource();
-    src.buffer = buf;
-    const gain = audioCtx.createGain();
-    gain.gain.value = 1;
-    src.connect(gain);
-    gain.connect(audioCtx.destination);
-    src.start(0);
-    activeSources.push(src);
-    stemGains[name] = gain;
-
-    // Update mute button to unmuted state
-    const btn = document.querySelector(`.btn-mute[data-stem="${name}"]`);
-    if (btn) {
-      btn.textContent = '🔊';
-      btn.classList.remove('muted');
-    }
+  if (!audioContext || audioContext.state === 'closed') {
+    audioContext = new AudioContext();
   }
 
+  if (audioContext.state === 'suspended') {
+    await audioContext.resume();
+  }
+
+  activeSources = [];
+
+  for (const name of STEMS) {
+    const buffer = stemBuffers[name];
+    if (!buffer) continue;
+
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+
+    const gain = audioContext.createGain();
+    gain.gain.value = 1;
+
+    source.connect(gain);
+    gain.connect(audioContext.destination);
+
+    activeSources.push({ source, gain, name });
+  }
+
+  if (!activeSources.length) return;
+
+  let remaining = activeSources.length;
   isPlaying = true;
   playAllBtn.textContent = '⏹ Stop';
 
-  // Auto‑stop when all sources end (use the longest buffer)
-  const maxDuration = Math.max(...activeSources.map(s => s.buffer ? s.buffer.duration : 0), 0);
-  setTimeout(() => {
-    if (isPlaying) stopAll();
-  }, (maxDuration + 0.5) * 1000);
+  activeSources.forEach(({ source }) => {
+    source.onended = () => {
+      remaining--;
 
-  // also stop when any source naturally ends
-  activeSources.forEach(src => {
-    src.onended = () => {
-      if (isPlaying && activeSources.every(s => s.playbackState === 'finished' || s.playbackState === undefined)) {
+      if (remaining === 0 && isPlaying) {
         stopAll();
       }
     };
+
+    source.start(0);
   });
 }
 
-function stopAll() {
-  activeSources.forEach(src => {
-    try { src.stop(); } catch (e) { /* already stopped */ }
-  });
-  activeSources = [];
-  stemGains = {};
-  isPlaying = false;
-  playAllBtn.textContent = '▶ Play All';
+function toggleStemMute(name, button) {
+  if (!isPlaying) return;
+
+  const item = activeSources.find((entry) => entry.name === name);
+  if (!item) return;
+
+  const muted = item.gain.gain.value === 0;
+  item.gain.gain.value = muted ? 1 : 0;
+
+  button.textContent = muted ? '🔊' : '🔇';
+  button.classList.toggle('muted', !muted);
 }
 
-function toggleStemMute(stemName) {
-  const gain = stemGains[stemName];
-  if (!gain) return;
-  const muted = gain.gain.value === 0;
-  gain.gain.value = muted ? 1 : 0;
-  const btn = document.querySelector(`.btn-mute[data-stem="${stemName}"]`);
-  if (btn) {
-    btn.textContent = muted ? '🔊' : '🔇';
-    btn.classList.toggle('muted', !muted);
-  }
-}
+playAllBtn.addEventListener('click', playAll);
 
-// ── API helpers ──
-async function uploadFile(file) {
-  const form = new FormData();
-  form.append('file', file);
-
-  const resp = await fetch(`${API_BASE}/separate`, {
-    method: 'POST',
-    body: form,
-  });
-
-  if (resp.status === 429) {
-    const data = await resp.json();
-    throw new Error(`Rate limited. Retry after ${data.retry_after_seconds || 30}s.`);
-  }
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Upload failed: ${resp.status} ${text}`);
-  }
-  return resp.json();
-}
-
-async function pollStatus(jobId) {
-  const resp = await fetch(`${API_BASE}/status/${jobId}`);
-  if (!resp.ok) throw new Error(`Status check failed: ${resp.status}`);
-  return resp.json();
-}
-
-async function downloadZip(jobId) {
-  const resp = await fetch(`${API_BASE}/download/${jobId}`);
-  if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
-  return resp.blob();
-}
-
-// ── Processing ──
-async function processFile(file) {
-  startSpools();
-  try {
-    // 1. Upload
-    statusEl.textContent = 'Uploading file...';
-    let job = await uploadFile(file);
-    const jobId = job.job_id;
-
-    // 2. Poll until done
-    const POLL_INTERVAL = 5000;
-    const MAX_WAIT = 15 * 60 * 1000;
-    const startTime = Date.now();
-
-    while (true) {
-      await sleep(POLL_INTERVAL);
-
-      if (Date.now() - startTime > MAX_WAIT) {
-        throw new Error('Timed out waiting for separation.');
-      }
-
-      job = await pollStatus(jobId);
-
-      if (job.status === 'queued') {
-        const mins = (job.estimated_wait_minutes || 0).toFixed(1);
-        statusEl.textContent = `Queued #${job.position} \u2014 ~${mins} min wait`;
-      } else if (job.status === 'processing') {
-        const est = job.estimated_seconds || 150;
-        const elapsed = job.elapsed_seconds || 0;
-        const progress = Math.min(elapsed / est, 1);
-        const pct = Math.round(progress * 100);
-        updatePeel(progress);
-        statusEl.textContent = `Processing... ${pct}%`;
-      } else if (job.status === 'done') {
-        break;
-      } else {
-        throw new Error(`Unexpected job status: ${job.status}`);
-      }
-    }
-
-    statusEl.textContent = 'Downloading stems...';
-
-    // 3. Download zip
-    const zipBlob = await downloadZip(jobId);
-
-    resetPeel();
-
-    // 4. Unzip and display
-    const zip = await JSZip.loadAsync(zipBlob);
-    const stems = {};
-    stemBlobs = {};
-    const order = job.stem_names || ['vocals.mp3', 'drums.mp3', 'bass.mp3', 'other.mp3'];
-
-    for (const name of order) {
-      const file = zip.file(name);
-      if (!file) continue;
-      const blob = await file.async('blob');
-      const stemName = name.replace(/\.mp3$/, '');
-      stems[stemName] = URL.createObjectURL(blob);
-      stemBlobs[stemName] = blob;
-    }
-
-    showStems(stems);
-    setupStemBuffers();
-
-    statusEl.textContent = `Done! ${job.stem_count} stems extracted.`;
-    statusEl.style.color = '#27ae60';
-    separateBtn.style.display = 'none';
-
-  } catch (err) {
-    resetPeel();
-    statusEl.textContent = err.message;
-    statusEl.style.color = 'var(--accent)';
-    console.error(err);
-  } finally {
-    stopSpools();
-  }
-}
-
-// ── Display stems in 2x2 grid ──
-function showStems(stemUrls) {
-  const displayOrder = ['vocals', 'drums', 'bass', 'other'];
-  stemGrid.innerHTML = displayOrder
-    .filter(name => stemUrls[name])
-    .map(name => {
-      const cfg = STEM_CONFIG[name];
-      return `
-        <div class="stem-card">
-          <h3 style="color:var(--accent)">${cfg.label}</h3>
-          <audio controls src="${stemUrls[name]}"></audio>
-          <button class="btn-stem-dl" onclick="window._sdemux_downloadStem('${name}')">Download</button>
-          <button class="btn-mute" data-stem="${name}" onclick="window._sdemux_toggleMute('${name}')" style="display:none">&#128264;</button>
-        </div>`;
-    })
-    .join('');
-  downloadAll.style.display = 'block';
-}
-
-// ── Per-stem download ──
-window._stemUrls = {};
-window._sdemux_downloadStem = function(name) {
-  const url = window._stemUrls[name];
-  if (!url) return;
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${name}.mp3`;
-  a.click();
-};
-
-// ── Mute toggle (called from onclick in stem cards) ──
-window._sdemux_toggleMute = function(name) {
-  toggleStemMute(name);
-};
-
-// ── ZIP download (re-zip client-side) ──
 downloadAll.addEventListener('click', async () => {
-  const urls = window._stemUrls;
-  if (!urls || Object.keys(urls).length === 0) return;
+  if (!Object.keys(stemBlobs).length) return;
+
   const zip = new JSZip();
-  const names = ['vocals', 'drums', 'bass', 'other'];
-  for (const name of names) {
-    const url = urls[name];
-    if (!url) continue;
-    const resp = await fetch(url);
-    const blob = await resp.blob();
-    zip.file(`${name}.mp3`, blob);
+
+  for (const name of STEMS) {
+    if (stemBlobs[name]) {
+      zip.file(`${name}.wav`, stemBlobs[name]);
+    }
   }
-  const zipBlob = await zip.generateAsync({ type: 'blob' });
-  const zipUrl = URL.createObjectURL(zipBlob);
-  const a = document.createElement('a');
-  a.href = zipUrl;
-  a.download = 'stems.zip';
-  a.click();
-  URL.revokeObjectURL(zipUrl);
+
+  setStatus('Creating your ZIP download...');
+
+  try {
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    downloadBlob(zipBlob, 'tunedrop-stems.zip');
+    setStatus('Your ZIP download is ready!');
+  } catch (error) {
+    setStatus(`ZIP creation failed: ${error.message}`, true);
+  }
 });
-
-// ── Stash stem URLs for per-stem & ZIP download ──
-const _origShowStems = showStems;
-showStems = function(stemUrls) {
-  window._stemUrls = stemUrls;
-  _origShowStems(stemUrls);
-};
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
