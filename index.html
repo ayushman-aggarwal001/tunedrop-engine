@@ -9,85 +9,68 @@
   <meta name="description" content="Separate vocals and instruments from your music with TuneDrop.">
 </head>
 <body>
+  <div class="boombox-container">
+    <header class="handle-bar">
+      <span class="logo">TuneDrop</span>
+      <span class="subtitle">AI stem separation</span>
+    </header>
 
-<div class="boombox-container">
-  <header class="handle-bar">
-    <span class="logo">TuneDrop</span>
-    <span class="subtitle">AI stem separation</span>
-  </header>
-
-  <div class="boombox">
-    <div class="deck cassette-deck">
-      <div class="cassette">
-        <div class="cassette-label">HTDemucs · 4-stem</div>
-
-        <div class="cassette-body-inner">
-          <div class="cassette-spools">
-            <div class="spool left-spool" id="spool-left">
-              <div class="spool-rim"></div>
-              <div class="spool-hub"></div>
+    <div class="boombox">
+      <div class="deck cassette-deck">
+        <div class="cassette">
+          <div class="cassette-label">HTDemucs · 4-stem</div>
+          <div class="cassette-body-inner">
+            <div class="cassette-spools">
+              <div class="spool left-spool" id="spool-left">
+                <div class="spool-rim"></div>
+                <div class="spool-hub"></div>
+              </div>
+              <div class="spool right-spool" id="spool-right">
+                <div class="spool-rim"></div>
+                <div class="spool-hub"></div>
+              </div>
             </div>
-            <div class="spool right-spool" id="spool-right">
-              <div class="spool-rim"></div>
-              <div class="spool-hub"></div>
+
+            <div id="drop-zone" class="tape-window">
+              <p class="drop-icon">♫</p>
+              <p>Drop your audio here</p>
+              <p class="hint">WAV / MP3 / M4A / FLAC / OGG</p>
+              <input type="file" id="file-input" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg" hidden>
             </div>
           </div>
+        </div>
 
-          <div id="drop-zone" class="tape-window">
-            <p class="drop-icon">♫</p>
-            <p>Drop your audio here</p>
-            <p class="hint">WAV / MP3 / M4A / FLAC / OGG</p>
-            <input type="file" id="file-input"
-              accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg" hidden>
-          </div>
+        <div id="source-player" class="source-section" style="display:none">
+          <p class="source-label">YOUR TRACK</p>
+          <audio id="source-audio" controls></audio>
+          <p id="source-info"></p>
         </div>
       </div>
 
-      <div id="source-player" class="source-section" style="display:none">
-        <p class="source-label">YOUR TRACK</p>
-        <audio id="source-audio" controls></audio>
-        <p id="source-info"></p>
-      </div>
-    </div>
-
-    <div class="deck speaker-deck">
-      <div class="speaker-grille">
-        <div class="speaker-ring r1"></div>
-        <div class="speaker-ring r2"></div>
-        <div class="speaker-ring r3"></div>
-        <div class="speaker-dome"></div>
-      </div>
-
-      <div class="stems-area">
-        <div id="status" class="status-text">
-          Upload a song to get started
+      <div class="deck speaker-deck">
+        <div class="speaker-grille">
+          <div class="speaker-ring r1"></div>
+          <div class="speaker-ring r2"></div>
+          <div class="speaker-ring r3"></div>
+          <div class="speaker-dome"></div>
         </div>
 
-        <button id="separate-btn" class="btn-action"
-          style="display:none">
-          ▶ Separate
-        </button>
-
-        <div id="stem-cards" class="stem-grid"></div>
-
-        <button id="play-all" class="btn-play" style="display:none">
-          ▶ Play All
-        </button>
-
-        <button id="download-all" class="btn-download"
-          style="display:none">
-          Download All
-        </button>
+        <div class="stems-area">
+          <div id="status" class="status-text">Upload a song to get started</div>
+          <button id="separate-btn" class="btn-action" style="display:none">▶ Separate</button>
+          <div id="stem-cards" class="stem-grid"></div>
+          <button id="play-all" class="btn-play" style="display:none">▶ Play All</button>
+          <button id="download-all" class="btn-download" style="display:none">Download All</button>
+        </div>
       </div>
+    </div>
+
+    <div class="vent-slots">
+      <span></span><span></span><span></span><span></span><span></span>
+      <span></span><span></span><span></span><span></span><span></span>
     </div>
   </div>
 
-  <div class="vent-slots">
-    <span></span><span></span><span></span><span></span><span></span>
-    <span></span><span></span><span></span><span></span><span></span>
-  </div>
-</div>
-
-<script type="module" src="/src/main.js"></script>
+  <script type="module" src="/src/main.js"></script>
 </body>
 </html>
