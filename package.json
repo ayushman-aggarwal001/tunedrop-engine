@@ -1,8 +1,7 @@
 {
-  "name": "sdemux",
-  "version": "2.0.0",
+  "name": "tunedrop-engine",
+  "version": "1.0.0",
   "private": true,
-  "description": "Browser-based audio stem separation via Demucs API",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,10 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "onnxruntime-web": "^1.20.1",
     "jszip": "^3.10.1"
   },
   "devDependencies": {
     "vite": "^5.0.0"
-  },
-  "license": "MIT"
+  }
 }
