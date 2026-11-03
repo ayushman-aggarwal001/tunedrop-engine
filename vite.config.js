@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  base: '/sdemux/',
+  base: '/tunedrop-engine/',
   build: {
     outDir: 'dist',
     target: 'esnext',
